@@ -12,7 +12,7 @@ from reliquary.infrastructure.storage import list_recent_datasets
 def _archive_bytes(window_start: int, prompt_ids: list[int]) -> bytes:
     payload = {
         "window_start": window_start,
-        "batch": [{"prompt_idx": p, "hotkey": "hk", "signed_round": 1, "k": 4}
+        "batch": [{"prompt_idx": p, "hotkey": "hk", "k": 4}
                   for p in prompt_ids],
     }
     return gzip.compress(json.dumps(payload).encode())

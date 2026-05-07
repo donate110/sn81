@@ -29,7 +29,7 @@ One full training window, step by step.
 Miners poll `GET /state` continuously. The response (`GrpoBatchState`) carries `state`, `window_n`, `checkpoint_n`, `checkpoint_repo_id`, `checkpoint_revision`, and `cooldown_prompts`. If `checkpoint_n` has advanced since the last poll, the miner downloads the new HF revision before doing anything else.
 
 **2. Miner picks a prompt.**
-The miner selects a `prompt_idx` from the environment (Hendrycks MATH, `qwedsacf/competition_math` mirror, ~12 500 problems, 5 difficulty levels, 7 subjects) that is not in `cooldown_prompts`. The reference engine uses uniform-random sampling with rejection against the cooldown set. This is a baseline: smarter miner-side selection — predicting which prompts will pass the zone filter for the current checkpoint — is expected and directly rewarded by FIFO (fewer `OUT_OF_ZONE` rejects → earlier `signed_round`). See [mining.md §Prompt selection strategy](mining.md#prompt-selection-strategy).
+The miner selects a `prompt_idx` from the environment (Hendrycks MATH, `qwedsacf/competition_math` mirror, ~12 500 problems, 5 difficulty levels, 7 subjects) that is not in `cooldown_prompts`. The reference engine uses uniform-random sampling with rejection against the cooldown set. This is a baseline: smarter miner-side selection — predicting which prompts will pass the zone filter for the current checkpoint — is expected and directly rewarded by FIFO (fewer `OUT_OF_ZONE` rejects → earlier successful `/submit` → batch slot won). See [mining.md §Prompt selection strategy](mining.md#prompt-selection-strategy).
 
 **3. Miner generates M=8 rollouts.**
 The miner runs exactly `M_ROLLOUTS = 8` completions at the protocol-fixed temperature `T_PROTO = 0.9`, `top_p = 1.0`, `top_k = 0`. No cherry-picking — all eight go in the submission regardless of their rewards.
@@ -41,7 +41,7 @@ For each rollout the miner calls `env.compute_reward`, then runs a bit-identical
 `POST /submit` sends the request to the validator. The validator runs the full verification pipeline (see below). On success the submission is appended to the open window's valid pool. The response is immediate (`accepted=True`) — the heavy GRAIL verification runs in a background worker.
 
 **6. Validator verifies, filters, selects batch.**
-The validator checks: window match → checkpoint hash → prompt index bounds → round freshness → cooldown → reward match → zone filter (`σ ≥ 0.43`) → GRAIL sketch. Any failure returns a `RejectReason` immediately. Valid submissions accumulate. Once `B_BATCH = 16` submissions with distinct `prompt_idx` values pass, `seal_event` fires.
+The validator checks: window match → checkpoint hash → prompt index bounds → cooldown → per-prompt FIFO short-circuit (`SUPERSEDED` if another miner already claimed this `prompt_idx` this window) → reward match → zone filter (`σ ≥ 0.43`) → GRAIL sketch. Any failure returns a `RejectReason` immediately. Valid submissions accumulate. Once `B_BATCH = 16` submissions with distinct `prompt_idx` values pass, `seal_event` fires.
 
 **7. Validator runs a GRPO step.**
 State transitions to `TRAINING`. `train_step()` computes group-relative advantages from each group's rewards, runs a PPO-clipped surrogate loss + KL penalty against the frozen reference model, and applies one AdamW step. The EMA scores are updated for all miners seen this window.
@@ -78,11 +78,13 @@ Once a `prompt_idx` enters the training batch it is ineligible for the next `BAT
 
 The cooldown map is rebuilt from R2 archives at validator startup — up to 50 recent windows are downloaded and replayed — so the curriculum state survives restarts without needing a local state file for cooldowns specifically.
 
-### FIFO by signed_round — speed matters, not cherry-picking
+### FIFO by TCP arrival — speed matters, not cherry-picking
 
-Submissions are ranked by `(signed_round, arrived_at)`. A lower (earlier) `signed_round` means the miner committed to its prompt before newer rounds were available — it has priority in batch selection.
+Submissions are ranked by `arrived_at` — the validator-side timestamp captured under the batcher lock the moment a submission clears the full validation pipeline. The first submission to claim a given `prompt_idx` for the current window wins that slot; every subsequent submission for the same prompt is rejected `SUPERSEDED` before any heavy work (reward + GRAIL forward pass) runs. Across distinct prompts, batch members are ordered by `arrived_at` with a deterministic hotkey/prompt/merkle-root tiebreak for the (rare) case of identical timestamps.
 
-Cherry-picking "easy" prompts requires extra inference compute → takes longer → `signed_round` is later → the submission is displaced from the batch by faster miners. The flat payment per batch slot means there is no reward multiplier for a higher-reward prompt either. The optimal strategy is to submit as fast as possible on whatever prompt passes the zone filter.
+Cherry-picking "easy" prompts requires extra inference compute → takes longer → arrives later → another miner has already claimed the slot. The flat payment per batch slot means there is no reward multiplier for a higher-reward prompt either. The optimal strategy is to submit as fast as possible on whatever prompt passes the zone filter.
+
+Why arrival time and not a miner-claimed value? In the v2.1 design, FIFO ranked submissions by a miner-supplied `signed_round` (a drand round) bounded by a `STALE_ROUND_LAG_MAX` lag. Because the value was claimed by the miner, a sophisticated miner could always pin `signed_round` at the floor of the accepted range and win FIFO regardless of true arrival order. v2.2 removes the field entirely and orders by validator-set `arrived_at` instead. Miners cannot manipulate it.
 
 ### EMA scoring — one payment per training step, not per submission
 
@@ -115,7 +117,7 @@ The base model is Qwen3-4B-Instruct (~4 billion parameters, ~8 GB in bfloat16). 
 ### How a miner earns
 
 1. Submit a valid in-zone group on a non-cooldown prompt when the window is `OPEN`.
-2. Be among the first `B_BATCH = 16` submissions with distinct `prompt_idx` values (FIFO by `signed_round`).
+2. Be among the first `B_BATCH = 16` submissions with distinct `prompt_idx` values (FIFO by validator-side TCP arrival; first to claim each `prompt_idx` wins that slot).
 3. Each batch slot you win contributes `1/B_BATCH` to your EMA update for that window.
 4. Every `WEIGHT_SUBMISSION_INTERVAL = 360` blocks (`ROLLING_WINDOWS = 72` windows), the validator calls `set_weights` on-chain with the current EMA values. Your emission for that interval is proportional to your EMA score.
 
@@ -138,9 +140,8 @@ A miner consistently winning 2 slots per window gets roughly `2/8 = 25%` of the 
 | `WRONG_CHECKPOINT` | `checkpoint_hash` is stale | Re-poll `/state`, update revision, retry |
 | `BAD_PROMPT_IDX` | `prompt_idx >= len(env)` | Use a valid index from the environment |
 | `PROMPT_MISMATCH` | `tokens[:prompt_length]` does not match the canonical tokenization of `env.get_problem(prompt_idx).prompt` (CoT prefix, alternate chat template, custom system prompt, etc.) | Use the env's exact prompt string and the pinned tokenizer; do not modify the prompt before generation |
-| `STALE_ROUND` | `signed_round` more than 10 behind current or from the future | Ensure drand client is synced |
 | `PROMPT_IN_COOLDOWN` | Prompt is in the active 50-window cooldown set | Pick a different `prompt_idx` |
-| `SUPERSEDED` | Another submission for this prompt already has a `signed_round` ≤ this one — it can't beat the incumbent at `select_batch` | Sign and submit earlier next window, or pick a different `prompt_idx` |
+| `SUPERSEDED` | Another submission for this `prompt_idx` already passed validation in this window — the slot is claimed | Submit faster next window, or pick a different `prompt_idx` |
 | `REWARD_MISMATCH` | Claimed reward does not match validator's `env.compute_reward` | Check env and model version alignment |
 | `OUT_OF_ZONE` | `σ < 0.43` (or `σ < 0.33` during bootstrap) | Pick a different prompt |
 | `WRONG_ROLLOUT_COUNT` | Submission does not have exactly `M_ROLLOUTS = 8` rollouts | Always submit exactly 8 |
@@ -154,10 +155,10 @@ A miner consistently winning 2 slots per window gets roughly `2/8 = 25%` of the 
 | Attack | Mitigation | Realistic outcome |
 |---|---|---|
 | Fabricate completions | GRAIL sketch fails | 0 earnings |
-| Resubmit old completions | `WRONG_CHECKPOINT` or `STALE_ROUND` | 0 earnings |
+| Resubmit old completions | `WRONG_CHECKPOINT` (rotation invalidates stale rollouts) | 0 earnings |
 | Cherry-pick only easy prompts | σ ≈ 0 → `OUT_OF_ZONE` | 0 earnings |
 | Spam the same prompt every window | Cooldown blocks re-entry for 50 windows | 0 earnings after first batch inclusion |
-| Generate extra rollouts to select the most favorable 8 | Extra compute → later `signed_round` → displaced from batch by faster miners | 0 earnings |
+| Generate extra rollouts to select the most favorable 8 | Extra compute → later TCP arrival → another miner has already claimed the `prompt_idx` (`SUPERSEDED`) or the batch is full | 0 earnings |
 | Submit extremely fast | Rewarded by FIFO selection | Expected, intended behavior |
 | Run a stale model | `WRONG_CHECKPOINT` rejects before GRAIL | 0 earnings |
 

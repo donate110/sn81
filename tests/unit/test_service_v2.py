@@ -26,7 +26,6 @@ def test_service_creates_grpo_window_batcher():
     shared_cooldown = CooldownMap(cooldown_windows=50)
     batcher = open_grpo_window(
         window_start=100,
-        current_round=999,
         env=_FakeEnv(),
         model=None,
         cooldown_map=shared_cooldown,

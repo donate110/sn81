@@ -108,7 +108,6 @@ class GrpoBatchState(BaseModel):
     state: WindowState
     window_n: int = Field(..., ge=0)
     anchor_block: int = Field(..., ge=0)
-    current_round: int = Field(..., ge=0)
     cooldown_prompts: list[int] = Field(default_factory=list)
     valid_submissions: int = Field(..., ge=0)
     checkpoint_n: int = Field(..., ge=0)

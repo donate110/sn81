@@ -114,7 +114,6 @@ def test_grpo_batch_state_exposes_cooldown():
         state=WindowState.OPEN,
         window_n=100,
         anchor_block=1000,
-        current_round=999,
         cooldown_prompts=[42, 7, 99],
         valid_submissions=12,
         checkpoint_n=0,

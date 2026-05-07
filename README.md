@@ -8,13 +8,13 @@ Reliquary is a coordination protocol that turns a set of independent GPU operato
 
 **Old subnets:** miners are paid per rollout. The competition is "do as many rollouts as you can."
 
-**Reliquary:** miners are paid for the rollouts the trainer actually uses. The competition is "find the rollouts I need to train on" — i.e. predict which prompts sit at the policy's current learning frontier (group-σ in the trainable band, not yet in cooldown). A miner who picks well lands earlier in `signed_round`, wins batch slots, and earns emission. A miner who picks poorly burns their own rollouts on `OUT_OF_ZONE` rejects.
+**Reliquary:** miners are paid for the rollouts the trainer actually uses. The competition is "find the rollouts I need to train on" — i.e. predict which prompts sit at the policy's current learning frontier (group-σ in the trainable band, not yet in cooldown). A miner who picks well submits earlier, wins batch slots, and earns emission. A miner who picks poorly burns their own rollouts on `OUT_OF_ZONE` rejects.
 
 This converts DAPO's reactive Dynamic Sampling filter into an ex-ante prediction market: the generate-then-discard cost is pushed out of the validator and onto the miner who guessed wrong. As the policy matures and the learning frontier narrows, selection intelligence becomes more valuable, not less. See [docs/concepts.md](docs/concepts.md#the-thesis) for the full argument.
 
 ## What it does
 
-Each training window is one GRPO step. The cadence is event-driven: a window seals the instant eight valid, distinct-prompt rollout groups land. Miners race to submit; the first eight in (by `signed_round`) win the batch. The validator runs a PPO-clipped surrogate loss with a KL penalty against the frozen reference, then pushes the updated weights to a public HF repo. The whole cycle repeats immediately.
+Each training window is one GRPO step. The cadence is event-driven: a window seals the instant eight valid, distinct-prompt rollout groups land. Miners race to submit; the first eight in (by validator-side TCP arrival) win the batch. The validator runs a PPO-clipped surrogate loss with a KL penalty against the frozen reference, then pushes the updated weights to a public HF repo. The whole cycle repeats immediately.
 
 The network produces three artefacts: a continuously-trained model (published to HF every ten windows), a per-window rollout dataset (archived to R2), and a signed checkpoint manifest (served from `/checkpoint`) that lets anyone verify the chain of custody from a base model through every training step. The audit trail is cryptographic — each rollout carries a GRAIL sketch that lets the validator re-run the forward pass and confirm the generation came from the announced checkpoint.
 
@@ -57,8 +57,9 @@ Miners submit rollout groups to `/submit` and poll `/state` for checkpoint updat
 
 - **v1** — verifiable-inference dataset production (shipped, deprecated)
 - **v2** — GRPO market with in-subnet training (shipped)
-- **v2.1** — batch-driven windows, HF checkpoint distribution, EMA scoring (current)
-- **v2.2** — multi-validator consensus + real drand-backed `signed_round` (planned)
+- **v2.1** — batch-driven windows, HF checkpoint distribution, EMA scoring (shipped)
+- **v2.2** — manipulation-resistant batch ordering (current)
+- **v2.3** — multi-validator consensus (planned)
 
 ## License
 

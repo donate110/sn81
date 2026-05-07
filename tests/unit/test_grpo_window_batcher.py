@@ -117,7 +117,6 @@ def _make_batcher(**overrides) -> GrpoWindowBatcher:
 
     kwargs = dict(
         window_start=500,
-        current_round=1000,
         env=FakeEnv(),
         model=_DefaultModelStub(),
         tokenizer=_DefaultFakeTokenizer(),
@@ -131,10 +130,9 @@ def _make_batcher(**overrides) -> GrpoWindowBatcher:
     return GrpoWindowBatcher(**kwargs)
 
 
-def test_constructor_sets_window_and_round():
+def test_constructor_sets_window():
     b = _make_batcher()
     assert b.window_start == 500
-    assert b.current_round == 1000
 
 
 def test_reject_window_mismatch():
@@ -217,8 +215,8 @@ def test_seal_batch_empty_pool_returns_empty():
 
 
 def test_seal_batch_fifo_across_many_submissions():
-    """v2.2: ordering is by ``arrived_at`` (TCP arrival time), not signed_round."""
-    b = _make_batcher(current_round=1010)
+    """v2.2: ordering is by ``arrived_at`` (validator-side TCP arrival)."""
+    b = _make_batcher()
     for i in range(B_BATCH):
         req = _request(
             prompt_idx=i, hotkey=f"hk{i}",
@@ -265,7 +263,7 @@ def test_state_endpoint_exposes_cooldown():
 
 
 def test_distinct_prompts_in_batch_only():
-    b = _make_batcher(current_round=1002)
+    b = _make_batcher()
     b.accept_submission(_request(prompt_idx=42, hotkey="alice"))
     b.accept_submission(_request(prompt_idx=42, hotkey="bob"))
     b.accept_submission(_request(prompt_idx=7, hotkey="carol"))
@@ -336,11 +334,9 @@ def test_empty_checkpoint_hash_disables_gate():
 async def test_seal_event_set_when_b_valid_distinct_landed():
     """seal_event fires when the B-th valid distinct-prompt non-cooldown
     submission is accepted."""
-    b = _make_batcher(current_round=2000)
+    b = _make_batcher()
     b.current_checkpoint_hash = "sha256:hash"
     assert not b.seal_event.is_set()
-    # Round must stay in [current_round - LAG_MAX, current_round] = [1990, 2000];
-    # wrap so B_BATCH submissions all land in that range.
     for i in range(B_BATCH):
         req = _request_v21(
             prompt_idx=i, hotkey=f"hk{i}",
@@ -354,7 +350,7 @@ async def test_seal_event_set_when_b_valid_distinct_landed():
 
 def test_seal_event_not_set_with_only_duplicate_prompts():
     """Two submissions on same prompt → only first counts → seal_event not set."""
-    b = _make_batcher(current_round=2000)
+    b = _make_batcher()
     b.current_checkpoint_hash = "sha256:hash"
     for i in range(2):
         req = _request_v21(
@@ -368,7 +364,7 @@ def test_seal_event_not_set_with_only_duplicate_prompts():
 
 def test_seal_event_not_set_with_fewer_than_b():
     """Fewer than B valid submissions → no seal."""
-    b = _make_batcher(current_round=2000)
+    b = _make_batcher()
     b.current_checkpoint_hash = "sha256:hash"
     for i in range(B_BATCH - 1):
         req = _request_v21(
@@ -492,12 +488,10 @@ def test_no_canonical_fn_disables_check():
 # FIFO short-circuit (SUPERSEDED)
 # ---------------------------------------------------------------------------
 #
-# select_batch picks the submission with the smallest signed_round per
-# prompt_idx. Once we've accepted a submission with signed_round=R for
-# prompt 42, any future submission for prompt 42 with signed_round >= R
-# can't beat it — reject early to skip the (~3s GPU) GRAIL forward pass.
-# A submission with signed_round < R legitimately races ahead and falls
-# through to the full pipeline.
+# v2.2: ordering is by validator-side TCP arrival (``arrived_at``). The first
+# submission to clear the full pipeline for a given ``prompt_idx`` claims
+# the slot; every subsequent submission for the same prompt is rejected
+# SUPERSEDED before the heavy reward + GRAIL forward pass (~3s GPU).
 
 
 def test_supersede_blocks_same_miner_duplicate_spam():

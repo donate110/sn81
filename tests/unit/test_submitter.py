@@ -150,7 +150,6 @@ async def test_get_window_state_v2(monkeypatch):
         state=WindowState.OPEN,
         window_n=100,
         anchor_block=1000,
-        current_round=999,
         cooldown_prompts=[42, 7],
         valid_submissions=3,
         checkpoint_n=0,

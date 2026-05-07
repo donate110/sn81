@@ -83,7 +83,6 @@ class GrpoWindowBatcher:
     def __init__(
         self,
         window_start: int,
-        current_round: int,
         env: Environment,
         model: Any,
         *,
@@ -95,20 +94,10 @@ class GrpoWindowBatcher:
         verify_commitment_proofs_fn: Callable[..., Any] | None = None,
         verify_signature_fn: Callable[[dict, str], bool] | None = None,
         time_fn: Callable[[], float] | None = None,
-        now_round_fn: Callable[[], int] | None = None,
     ) -> None:
         import time
 
         self.window_start = window_start
-        # If ``now_round_fn`` is supplied, ``current_round`` becomes a live
-        # property that re-evaluates the drand round on every access — this
-        # is what the production validator uses so the anti-replay window
-        # rolls forward correctly during the window. Tests pass a static
-        # int for determinism. (As of v2.2 ``current_round`` is only used
-        # by the future-replay check — see ``_accept_locked``; it is no
-        # longer used to enforce a lag-based freshness window.)
-        self._current_round_static = current_round
-        self._now_round_fn = now_round_fn
         self.env = env
         self.model = model
         self.tokenizer = tokenizer
@@ -164,12 +153,6 @@ class GrpoWindowBatcher:
         # v2.1: checkpoint hash miners must match. Empty string disables
         # the gate (test convenience / pre-first-publish).
         self.current_checkpoint_hash: str = ""
-
-    @property
-    def current_round(self) -> int:
-        if self._now_round_fn is not None:
-            return self._now_round_fn()
-        return self._current_round_static
 
     @property
     def seal_event(self) -> asyncio.Event:
@@ -392,7 +375,6 @@ class GrpoWindowBatcher:
                 state=WindowState.OPEN,
                 window_n=self.window_start,
                 anchor_block=self.window_start,
-                current_round=self.current_round,
                 cooldown_prompts=sorted(
                     self._cooldown.current_cooldown_set(self.window_start)
                 ),

@@ -62,7 +62,6 @@ class _ModelStub:
 def _batcher(window_start=500, cooldown_map=None):
     batcher = GrpoWindowBatcher(
         window_start=window_start,
-        current_round=1000,
         env=FakeEnv(),
         model=_ModelStub(),
         cooldown_map=cooldown_map,

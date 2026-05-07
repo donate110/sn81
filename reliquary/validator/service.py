@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any
 
 from reliquary.constants import (
     BATCH_PROMPT_COOLDOWN_WINDOWS,
@@ -58,24 +58,18 @@ def is_bootstrap_window(window_start: int, subnet_start: int) -> bool:
 
 def open_grpo_window(
     window_start: int,
-    current_round: int,
     env,
     model,
     *,
     cooldown_map: CooldownMap,
     tokenizer,
     bootstrap: bool = False,
-    now_round_fn: Callable[[], int] | None = None,
 ) -> GrpoWindowBatcher:
     """Instantiate a GrpoWindowBatcher for this window.
 
     ``cooldown_map`` is the validator's long-lived CooldownMap, shared
     across windows. Each window's sealed batch updates it via
     ``GrpoWindowBatcher.seal_batch``.
-
-    ``now_round_fn`` lets the validator inject a live drand-round getter so
-    the anti-replay check uses wall-clock drand state instead of a value
-    frozen at window open.
     """
     def _completion_text(rollout: RolloutSubmission) -> str:
         prompt_len = rollout.commit.get("rollout", {}).get("prompt_length", 0)
@@ -87,7 +81,6 @@ def open_grpo_window(
 
     return GrpoWindowBatcher(
         window_start=window_start,
-        current_round=current_round,
         env=env,
         model=model,
         tokenizer=tokenizer,
@@ -95,7 +88,6 @@ def open_grpo_window(
         bootstrap=bootstrap,
         completion_text_fn=_completion_text,
         canonical_prompt_tokens_fn=_canonical_prompt_tokens,
-        now_round_fn=now_round_fn,
     )
 
 
@@ -310,11 +302,9 @@ class ValidationService:
         )
         self._active_batcher = open_grpo_window(
             window_start=self._window_n,
-            current_round=0,  # unused — superseded by now_round_fn below
             env=self.env, model=self.model,
             cooldown_map=self._cooldown_map, tokenizer=self.tokenizer,
             bootstrap=bootstrap,
-            now_round_fn=self._compute_current_drand_round,
         )
         cp = self._checkpoint_store.current_manifest()
         self._active_batcher.current_checkpoint_hash = (
@@ -703,22 +693,6 @@ class ValidationService:
                 block_hash, beacon["randomness"], drand_round=beacon["round"],
             )
         return chain.compute_window_randomness(block_hash)
-
-    def _compute_current_drand_round(self) -> int:
-        """Live drand round at the time of call.
-
-        v2.2: kept on the batcher API for window randomness only.
-        ``signed_round`` was removed from the wire protocol entirely;
-        ordering is now pure TCP-arrival FIFO.
-
-        With ``use_drand=False`` (test/mock mode) we return ``window_n``
-        so legacy deterministic tests keep working.
-        """
-        if not self.use_drand:
-            return self._window_n
-        import time as _time
-        from reliquary.infrastructure.drand import get_round_at_time
-        return get_round_at_time(int(_time.time()))
 
     async def _submit_weights(self, subtensor) -> bool:
         """Submit weights from the current EMA snapshot. EMA is NOT cleared

@@ -89,7 +89,6 @@ def _always_true_proof(commit, model, randomness):
 def _make_batcher(window, cooldown):
     return GrpoWindowBatcher(
         window_start=window,
-        current_round=window * 10 + 100,  # plenty of headroom for signed_round
         env=FakeEnv(),
         model=_ModelStub(),
         cooldown_map=cooldown,
@@ -106,13 +105,13 @@ def test_two_windows_with_cooldown():
     cooldown = CooldownMap(cooldown_windows=3)  # small for test speed
     n_submissions = B_BATCH + 2
 
-    # Window 0: current_round = 0 * 10 + 100 = 100; signed_round must be in [90, 100]
+    # Window 0: B_BATCH+2 distinct prompts arrive
     b0 = _make_batcher(window=0, cooldown=cooldown)
     for i in range(n_submissions):
         req = BatchSubmissionRequest(
             miner_hotkey=f"hk{i}",
             prompt_idx=i,
-            window_start=0,  # within LAG_MAX=10 of current_round=100
+            window_start=0,
             merkle_root=_merkle(i),
             rollouts=_rollouts(k=4),
             checkpoint_hash="sha256:test",
@@ -132,7 +131,7 @@ def test_two_windows_with_cooldown():
         req = BatchSubmissionRequest(
             miner_hotkey=f"hk{prompt_idx}",
             prompt_idx=prompt_idx,
-            window_start=1,  # within LAG_MAX=10 of current_round=110
+            window_start=1,
             merkle_root=_merkle(100 + prompt_idx),
             rollouts=_rollouts(k=4),
             checkpoint_hash="sha256:test",
@@ -142,13 +141,12 @@ def test_two_windows_with_cooldown():
         assert resp.reason == RejectReason.PROMPT_IN_COOLDOWN
 
     # Window 4 (after cooldown=3 expires): re-use any batched prompt
-    # current_round = 4 * 10 + 100 = 140; signed_round must be in [130, 140]
     reuse_prompt = next(iter(sorted(batched_prompts)))
     b4 = _make_batcher(window=4, cooldown=cooldown)
     req = BatchSubmissionRequest(
         miner_hotkey=f"hk{reuse_prompt}",
         prompt_idx=reuse_prompt,
-        window_start=4,  # within LAG_MAX=10 of current_round=140
+        window_start=4,
         merkle_root=_merkle(500),
         rollouts=_rollouts(k=4),
         checkpoint_hash="sha256:test",
@@ -215,7 +213,7 @@ def test_out_of_zone_rejected_end_to_end():
     req = BatchSubmissionRequest(
         miner_hotkey="hk",
         prompt_idx=42,
-        window_start=0,  # within LAG_MAX=10 of current_round=100
+        window_start=0,
         merkle_root=_merkle(42),
         rollouts=_rollouts(k=0),  # all losses
         checkpoint_hash="sha256:test",

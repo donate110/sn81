@@ -106,7 +106,6 @@ class ValidatorServer:
                 state=self._current_state,
                 window_n=batcher.window_start,
                 anchor_block=batcher.window_start,
-                current_round=batcher.current_round,
                 cooldown_prompts=sorted(
                     batcher._cooldown.current_cooldown_set(batcher.window_start)
                 ),

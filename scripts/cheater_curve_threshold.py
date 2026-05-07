@@ -242,7 +242,6 @@ def _build_training_batch_from_rollouts(
             ValidSubmission(
                 hotkey="synthetic",
                 prompt_idx=g["prompt_idx"],
-                signed_round=0,
                 merkle_root_bytes=b"\x00" * 32,
                 rollouts=rollouts,
             )

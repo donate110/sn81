@@ -34,7 +34,7 @@ Every miner runs a continuous poll-submit loop:
 
 5. **Builds GRAIL sketches.** Runs the bit-identical HuggingFace forward pass on the proof GPU to construct sketch commitments that bind the completions to the model.
 
-6. **Submits.** POSTs a `BatchSubmissionRequest` to `/submit` containing: `prompt_idx`, 8 rollouts, local rewards, GRAIL commits, `merkle_root`, `signed_round` (the current window's `current_round` from `/state`), and `checkpoint_hash` (the HF revision from the last `/state` response).
+6. **Submits.** POSTs a `BatchSubmissionRequest` to `/submit` containing: `miner_hotkey`, `prompt_idx`, `window_start` (from the last `/state`), 8 rollouts, local rewards, GRAIL commits, `merkle_root`, and `checkpoint_hash` (the HF revision from the last `/state` response). Submission ordering is by validator-side TCP arrival — there is no miner-supplied round or timestamp field.
 
 The validator processes submissions in real time. Only the first `B_BATCH = 16` accepted submissions with distinct `prompt_idx` values that pass all checks form the training batch.
 
@@ -52,8 +52,8 @@ GET /state  →  GrpoBatchState
 
 **This is a baseline, not a ceiling.** The protocol enforces no further constraint on `prompt_idx`, but the economics strongly reward miners who can predict which prompts will pass the zone filter (`σ ≥ 0.43`) for the current checkpoint:
 
-- An `OUT_OF_ZONE` rejection wastes the full rollout group (eight generations plus their GRAIL proofs). The retry ships with a later `signed_round`, so miners who guessed right on the first attempt land in the batch ahead of you.
-- A good picker → first submission passes → earlier `signed_round` → FIFO priority → more slots won per window.
+- An `OUT_OF_ZONE` rejection wastes the full rollout group (eight generations plus their GRAIL proofs). The retry arrives later, so miners who guessed right on the first attempt have already claimed the slot for that `prompt_idx` (`SUPERSEDED`) or filled the batch ahead of you.
+- A good picker → first submission passes → earlier validator-side arrival → batch slot won.
 
 Techniques miners are expected to develop (non-exhaustive):
 
@@ -93,7 +93,7 @@ See [docs/concepts.md](concepts.md#economic-model) for the full economic model.
 | `WINDOW_MISMATCH` | `window_start` in request is stale | Refresh `/state` and retry |
 | `WRONG_CHECKPOINT` | `checkpoint_hash` does not match the active revision | Re-poll `/state`, update revision, retry |
 | `PROMPT_IN_COOLDOWN` | `prompt_idx` is in the active cooldown set | Retry with a different `prompt_idx` |
-| `STALE_ROUND` | `signed_round` is too old or from the future | Ensure your drand client is synced |
+| `SUPERSEDED` | Another miner already claimed this `prompt_idx` for the current window | Submit faster next window, or pick a different `prompt_idx` |
 | `OUT_OF_ZONE` | σ below threshold (0.43 steady / 0.33 bootstrap) | Pick a different prompt |
 | `REWARD_MISMATCH` | Claimed reward does not match validator's `env.compute_reward` | Check env and model version alignment |
 | `GRAIL_FAIL` | Sketch does not match validator's forward pass | Check checkpoint, `attn_implementation`, and CUDA version |
