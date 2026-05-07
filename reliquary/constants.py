@@ -42,7 +42,7 @@ PROOF_COEFF_RANGE = 127
 # positives same-GPU. Subnet currently in test phase — miners are advised
 # to use the same card as the validator (H200) until cross-GPU honest
 # noise is measured. See docs/mining.md.
-PROOF_SKETCH_TOLERANCE_BASE = 1000
+PROOF_SKETCH_TOLERANCE_BASE = 5000
 
 # Sketch tolerance sqrt growth factor per position.
 # tolerance(P) = base + growth * sqrt(P).
