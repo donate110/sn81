@@ -50,27 +50,39 @@ def verify_signature(commit: dict, hotkey: str) -> bool:
 def verify_termination(
     commit: dict, tokenizer: Any, logits: torch.Tensor, model: Any = None,
 ) -> bool:
-    """Hard check: rollout ends with EOS at p(EOS) >= MIN_EOS_PROBABILITY.
+    """Two paths to a valid termination, both gaming-safe:
 
-    Reuses the per-token logits cached from ``verify_commitment_proofs``,
-    so this costs O(vocab) on a single position — no extra forward pass.
+    Path 1 — max-length termination: ``completion_length`` reached the
+    network-wide protocol cap ``MAX_NEW_TOKENS_PROTOCOL_CAP``. The model
+    legitimately ran out of tokens. A miner who'd try to game this path by
+    truncating early can't: anything below the cap fails Path 1, and a
+    ``tokens[-1]`` that wasn't actually sampled by the model fails Path 2's
+    p_stop check (the GRAIL forward replays the logits, so forged stops are
+    detected).
 
-    Strict EOS-only: a rollout that hit ``max_new_tokens`` without sampling
-    EOS is treated as artificially truncated and rejected. In RL settings
-    where reward depends on parsing the model's final output (boxed math,
-    code block, JSON), a truncated rollout scores zero anyway — there is
-    no legitimate reason for a healthy rollout to hit the cap.
+    Path 2 — natural EOS termination: ``tokens[-1]`` is one of the stop
+    tokens declared in ``model.generation_config.eos_token_id`` (Qwen3-Instruct
+    has ``[151645, 151643]``) AND its probability mass at ``logits[-2]`` is at
+    least ``MIN_EOS_PROBABILITY``. The probability gate catches sampler-forced
+    stops at near-zero probability that wouldn't pass an honest decode.
 
-    Source of stop tokens: ``model.generation_config.eos_token_id`` is the
-    canonical list (matches what vLLM stops on). For Qwen3-Instruct it is
-    ``[151645, 151643]`` — the model legitimately stops on either, so the
-    check must accept either. Fallback to ``tokenizer.eos_token_id`` when
-    ``model`` is not provided (legacy callers / test stubs).
+    Anything else (truncation at an intermediate length without EOS) is
+    artificial and rejected.
     """
-    from reliquary.constants import MIN_EOS_PROBABILITY
+    from reliquary.constants import (
+        MAX_NEW_TOKENS_PROTOCOL_CAP,
+        MIN_EOS_PROBABILITY,
+    )
 
     tokens = commit["tokens"]
+    rollout_meta = commit.get("rollout", {}) or {}
+    completion_length = int(rollout_meta.get("completion_length", 0))
 
+    # Path 1: max-length termination.
+    if completion_length >= MAX_NEW_TOKENS_PROTOCOL_CAP:
+        return True
+
+    # Path 2: natural EOS with non-trivial probability.
     eos_ids: Any = None
     gen_cfg = getattr(model, "generation_config", None) if model is not None else None
     if gen_cfg is not None:
@@ -87,9 +99,6 @@ def verify_termination(
 
     if int(tokens[-1]) not in eos_set:
         return False
-    # logits[-2] is the distribution that produced tokens[-1]. Sum p(any
-    # accepted stop token) since the model legitimately distributes mass
-    # across them.
     probs = torch.softmax(logits[-2].float(), dim=-1)
     p_stop = float(sum(probs[eid].item() for eid in eos_set))
     return p_stop >= MIN_EOS_PROBABILITY
