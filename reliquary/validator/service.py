@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
 from typing import Any
 
 from reliquary.constants import (
@@ -23,7 +22,6 @@ from reliquary.constants import (
     POLL_INTERVAL_SECONDS,
     PPO_CLIP_EPSILON,
     SUBNET_START_BLOCK,
-    UID_BURN,
     VALIDATOR_HTTP_PORT,
     WANDB_TRAINING_VERSION,
     WEIGHT_SUBMISSION_INTERVAL,
@@ -41,8 +39,6 @@ from reliquary.validator.server import ValidatorServer
 from reliquary.validator.training import train_step
 
 logger = logging.getLogger(__name__)
-
-ROLLING_WINDOWS = WEIGHT_SUBMISSION_INTERVAL // WINDOW_LENGTH
 
 
 def is_bootstrap_window(window_start: int, subnet_start: int) -> bool:
@@ -170,6 +166,10 @@ class ValidationService:
         self._cooldown_map = CooldownMap(
             cooldown_windows=BATCH_PROMPT_COOLDOWN_WINDOWS
         )
+        # Single source of set_weights logic — shared with weight-only mode
+        # so both modes produce identical weights for the same R2 state.
+        from reliquary.validator.weight_only import WeightOnlyValidator
+        self._weights_submitter = WeightOnlyValidator(wallet=wallet, netuid=netuid)
 
         self.server = ValidatorServer(host=http_host, port=http_port)
 
@@ -652,50 +652,8 @@ class ValidationService:
         return chain.compute_window_randomness(block_hash)
 
     async def _submit_weights(self, subtensor) -> bool:
-        """Submit weights derived from R2 archives.
-
-        Reads the same archives that any weight-only validator would replay
-        (``WeightOnlyValidator``) so a trainer and a weight-only validator
-        running side-by-side converge to identical weights for the same
-        on-chain state. The trainer's in-memory EMA is no longer authoritative;
-        R2 is the single source of truth for scoring.
+        """Delegate to the shared WeightOnlyValidator so trainer and
+        weight-only validators run identical scoring + chain submission code.
         """
-        from reliquary.validator.weight_only import WeightOnlyValidator
-
-        windows = await storage.list_all_window_keys()
-        if not windows:
-            logger.info("No archives yet; nothing to submit")
-            return False
-        archives = await storage.list_recent_datasets(
-            current_window=max(windows) + 1,
-            n=ROLLING_WINDOWS * 3,
-        )
-        miner_weights = dict(WeightOnlyValidator._replay_ema(archives))
-        total = sum(miner_weights.values())
-        burn_weight = max(0.0, 1.0 - total)
-
-        logger.info(
-            "Submitting weights: %d miners (ema_total=%.4f), burn=%.4f",
-            len(miner_weights), total, burn_weight,
-        )
-        for hk, w in sorted(miner_weights.items(), key=lambda x: -x[1])[:10]:
-            logger.info("  %s: %.6f", hk[:8], w)
-
-        meta = await chain.get_metagraph(subtensor, self.netuid)
-        hotkey_to_uid = dict(zip(meta.hotkeys, meta.uids))
-        uids: list[int] = []
-        weight_vals: list[float] = []
-        for hk, w in miner_weights.items():
-            if hk in hotkey_to_uid and w > 0:
-                uids.append(int(hotkey_to_uid[hk]))
-                weight_vals.append(w)
-        if burn_weight > 0:
-            uids.append(UID_BURN)
-            weight_vals.append(burn_weight)
-        if not uids:
-            logger.info("No non-zero weights to submit; nothing to do.")
-            return True
-        return await chain.set_weights(
-            subtensor, self.wallet, self.netuid, uids, weight_vals,
-        )
+        return await self._weights_submitter.submit_once(subtensor)
 
