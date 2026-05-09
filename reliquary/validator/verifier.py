@@ -90,18 +90,34 @@ def verify_termination(
     if eos_ids is None:
         eos_ids = getattr(tokenizer, "eos_token_id", None)
     if eos_ids is None:
+        logger.warning(
+            "termination_fail reason=no_eos_ids completion_length=%d cap=%d",
+            completion_length, MAX_NEW_TOKENS_PROTOCOL_CAP,
+        )
         return False
     if isinstance(eos_ids, int):
         eos_ids = [eos_ids]
     eos_set = {int(e) for e in eos_ids if e is not None}
     if not eos_set:
+        logger.warning(
+            "termination_fail reason=empty_eos_set completion_length=%d cap=%d",
+            completion_length, MAX_NEW_TOKENS_PROTOCOL_CAP,
+        )
         return False
 
-    if int(tokens[-1]) not in eos_set:
-        return False
+    last_tok = int(tokens[-1])
+    in_eos = last_tok in eos_set
     probs = torch.softmax(logits[-2].float(), dim=-1)
     p_stop = float(sum(probs[eid].item() for eid in eos_set))
-    return p_stop >= MIN_EOS_PROBABILITY
+    ok = in_eos and p_stop >= MIN_EOS_PROBABILITY
+    if not ok:
+        logger.warning(
+            "termination_fail completion_length=%d cap=%d last_token=%d "
+            "in_eos=%s p_stop=%.5f min_p=%.3f eos_set=%s",
+            completion_length, MAX_NEW_TOKENS_PROTOCOL_CAP,
+            last_tok, in_eos, p_stop, MIN_EOS_PROBABILITY, sorted(eos_set),
+        )
+    return ok
 
 
 def verify_commitment_proofs(
