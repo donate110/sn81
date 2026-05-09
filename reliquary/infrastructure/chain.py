@@ -57,7 +57,7 @@ async def blocks_until_next_epoch(subtensor, netuid: int) -> int | None:
     tempo). Used by ``WeightOnlyValidator.run()`` to sync weight submissions.
     """
     return await asyncio.wait_for(
-        asyncio.to_thread(subtensor.blocks_until_next_epoch, netuid),
+        subtensor.blocks_until_next_epoch(netuid),
         timeout=CHAIN_READ_TIMEOUT,
     )
 

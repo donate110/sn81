@@ -12,7 +12,7 @@ async def test_blocks_until_next_epoch_wraps_subtensor():
     from reliquary.infrastructure import chain
 
     fake_sub = MagicMock()
-    fake_sub.blocks_until_next_epoch = MagicMock(return_value=42)
+    fake_sub.blocks_until_next_epoch = AsyncMock(return_value=42)
 
     result = await chain.blocks_until_next_epoch(fake_sub, netuid=81)
     assert result == 42
@@ -26,9 +26,8 @@ async def test_blocks_until_next_epoch_timeout():
 
     fake_sub = MagicMock()
 
-    def _hang(*_a, **_kw):
-        import time
-        time.sleep(60)  # would block forever without wait_for
+    async def _hang(*_a, **_kw):
+        await asyncio.sleep(3600)  # cancelled by wait_for in milliseconds
     fake_sub.blocks_until_next_epoch = _hang
 
     # Patch the timeout constant down to a tenth of a second for the test.
