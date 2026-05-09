@@ -307,7 +307,19 @@ class ValidationService:
         # The miners who did submit are still credited via _update_ema.
         trained = len(batch) >= B_BATCH
         if trained:
-            self.model = train_step(self.model, batch, window_index=self._window_n)
+            try:
+                self.model = train_step(
+                    self.model, batch, window_index=self._window_n,
+                )
+            except Exception:
+                # Don't let a training failure (e.g. CUDA OOM) skip
+                # _archive_window — miners still need their R2 contribution
+                # recorded so the EMA / on-chain weights reflect this window.
+                logger.exception(
+                    "train_step failed for window %d; archiving anyway and "
+                    "skipping publish", self._window_n,
+                )
+                trained = False
         else:
             logger.info(
                 "Window %d sealed with %d/%d submissions — skipping train_step + publish",
