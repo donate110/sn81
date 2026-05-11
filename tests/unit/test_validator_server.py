@@ -249,19 +249,15 @@ def test_checkpoint_endpoint_returns_manifest_when_set():
     assert body["signature"] == "ed25519:sig_42"
 
 
-# --- queue backpressure (bounded depth) ---
+# --- provisional response semantics ---
 
-def test_submit_rejects_window_busy_when_queue_full():
-    """When the submit queue is at or above MAX_SUBMIT_QUEUE_DEPTH, /submit
-    must reject new requests with WINDOW_BUSY instead of the silent
-    over-accept that used to drown miners post-seal.
-
-    The bound only fires under the worker path (real prod): the TestClient
-    sync path runs accept_submission inline. Mark ``_worker_task`` as
-    non-None so the prod branch is exercised, then pre-fill the queue.
+def test_submit_returns_submitted_under_worker_path():
+    """Under uvicorn (worker path), /submit must enqueue and return the
+    ``SUBMITTED`` sentinel rather than ``ACCEPTED``. The miner needs a way
+    to tell "queued, validation pending" from "fully validated and in
+    _valid" — the latter is reserved for the inline sync path used by
+    tests.
     """
-    import asyncio
-    from reliquary.constants import MAX_SUBMIT_QUEUE_DEPTH
     from reliquary.protocol.submission import WindowState
 
     server = ValidatorServer()
@@ -270,54 +266,14 @@ def test_submit_rejects_window_busy_when_queue_full():
     server.set_active_batcher(batcher)
     server.set_current_state(WindowState.OPEN)
     # Pretend a worker is running so the prod enqueue branch is taken.
-    server._worker_task = object()  # any non-None sentinel
-    # Saturate the queue.
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        for _ in range(MAX_SUBMIT_QUEUE_DEPTH):
-            server._submit_queue.put_nowait((_request(), batcher))
-    finally:
-        asyncio.set_event_loop(None)
-        loop.close()
-
-    client = TestClient(server.app)
-    resp = client.post("/submit", json=_request().model_dump(mode="json"))
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["accepted"] is False
-    assert body["reason"] == "window_busy"
-
-
-def test_submit_accepts_when_queue_has_room():
-    """Below MAX_SUBMIT_QUEUE_DEPTH, /submit returns a provisional
-    accepted=True under the worker path."""
-    import asyncio
-    from reliquary.constants import MAX_SUBMIT_QUEUE_DEPTH
-    from reliquary.protocol.submission import WindowState
-
-    server = ValidatorServer()
-    batcher = _batcher(window_start=500)
-    batcher.current_checkpoint_hash = "sha256:test"
-    server.set_active_batcher(batcher)
-    server.set_current_state(WindowState.OPEN)
     server._worker_task = object()
-    # One item already queued, well below MAX.
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        server._submit_queue.put_nowait((_request(), batcher))
-        assert server._submit_queue.qsize() < MAX_SUBMIT_QUEUE_DEPTH
-    finally:
-        asyncio.set_event_loop(None)
-        loop.close()
 
     client = TestClient(server.app)
     resp = client.post("/submit", json=_request().model_dump(mode="json"))
     assert resp.status_code == 200
     body = resp.json()
     assert body["accepted"] is True
-    assert body["reason"] == "accepted"
+    assert body["reason"] == "submitted"
 
 
 # --- worker drops items whose batcher is no longer active ---

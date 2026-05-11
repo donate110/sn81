@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
 
-from reliquary.constants import MAX_SUBMIT_QUEUE_DEPTH, VALIDATOR_HTTP_PORT
+from reliquary.constants import VALIDATOR_HTTP_PORT
 from reliquary.protocol.submission import (
     BatchSubmissionRequest,
     BatchSubmissionResponse,
@@ -83,30 +83,21 @@ class ValidatorServer:
             if request.window_start != batcher.window_start:
                 raise HTTPException(status_code=409, detail="window_mismatch")
 
-            # Under TestClient (no worker running) we run synchronously so tests
-            # see the real accept verdict; under uvicorn we enqueue for the
-            # worker and return a provisional ACCEPTED. The worker's real
-            # verdict surfaces in logs.
+            # Under TestClient (no worker running) we run synchronously so
+            # tests see the real ``ACCEPTED`` verdict; under uvicorn we enqueue
+            # for the worker and return ``SUBMITTED`` — a distinct sentinel
+            # that tells the miner the request is queued, not yet validated.
+            # The real verdict (accept/reject post-GRAIL) surfaces in the
+            # validator's logs and in the R2 archive. The queue is unbounded
+            # by design: pressure from a saturated window is relieved by
+            # silently draining the leftover queue at the next batcher swap
+            # (see ``_submit_worker`` below), not by HTTP-level rejections.
             if self._worker_task is None:
                 return batcher.accept_submission(request)
 
-            # Bound the queue: GRAIL verification is ~5-25s per item but
-            # miners can submit much faster than that. Without a bound,
-            # the queue accumulates during a window and at seal time we
-            # have dozens of items that will run through GRAIL only to
-            # land in a sealed batcher's _valid (never archived). Miners
-            # whose items are in that drainage receive a provisional
-            # ``accepted=True`` here but their submission is silently
-            # dropped post-seal — they're unaware. Rejecting at the
-            # enqueue boundary tells them honestly to back off.
-            if self._submit_queue.qsize() >= MAX_SUBMIT_QUEUE_DEPTH:
-                return BatchSubmissionResponse(
-                    accepted=False, reason=RejectReason.WINDOW_BUSY,
-                )
-
             await self._submit_queue.put((request, batcher))
             return BatchSubmissionResponse(
-                accepted=True, reason=RejectReason.ACCEPTED,
+                accepted=True, reason=RejectReason.SUBMITTED,
             )
 
         @app.get("/state", response_model=GrpoBatchState)
@@ -152,19 +143,25 @@ class ValidatorServer:
                 request, batcher = await self._submit_queue.get()
             except asyncio.CancelledError:
                 return
-            # Drop items whose batcher is no longer the active one. This
-            # is a defense-in-depth complement to the queue-depth bound:
-            # the bound limits how many such items can sneak in, this
-            # drop catches the residual ones that were enqueued between
-            # /submit and the next active-batcher swap. Without it, the
-            # worker would spend ~30s of GRAIL on a sealed batcher whose
-            # _valid is never archived, blocking the new window's
-            # progress that much longer.
+            # Silently drop items whose batcher is no longer the active one.
+            # This is what relieves pressure from a saturated window: the
+            # queue is unbounded by design, so a busy window can pile up
+            # dozens of pending items behind the in-flight GRAIL. As soon
+            # as the service's main loop opens the next window and swaps
+            # ``active_batcher``, every leftover item is for a sealed
+            # batcher whose ``_valid`` will never be re-archived — running
+            # GRAIL on them would burn ~5-25s per item for nothing and
+            # would keep the next window starving for cycles. We log at
+            # info so operators can confirm the drain is happening; the
+            # miner has already received a provisional ``SUBMITTED`` from
+            # the /submit response and learns the real outcome (or its
+            # absence) from the R2 archive.
             if batcher is not self.active_batcher:
-                logger.debug(
-                    "dropping late submission prompt=%d (batcher window=%d "
-                    "no longer active)",
-                    request.prompt_idx, batcher.window_start,
+                logger.info(
+                    "dropping late submission prompt=%d hotkey=%s "
+                    "(batcher window=%d no longer active)",
+                    request.prompt_idx, request.miner_hotkey[:12],
+                    batcher.window_start,
                 )
                 continue
             try:

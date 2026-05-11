@@ -180,14 +180,6 @@ M_ROLLOUTS = 8
 # TCP arrival, distinct prompts, not in cooldown) feed the GRPO step.
 B_BATCH = 8
 
-# Maximum depth of the HTTP-to-worker submission queue. New /submit calls
-# beyond this depth are rejected with ``WINDOW_BUSY`` so miners get an
-# honest signal instead of a provisional ``accepted=True`` for a slot
-# they'll never get processed in time. Tuned a hair above B_BATCH so the
-# worker has a small look-ahead buffer without accumulating multi-minute
-# post-seal drainage backlogs.
-MAX_SUBMIT_QUEUE_DEPTH = 12
-
 # Sampling temperature fixed at protocol level. Miners who use a different
 # T would produce samples from a different distribution → biased GRPO
 # gradient. Value chosen in the GRPO-friendly range (non-zero).
@@ -200,7 +192,7 @@ TOP_K_PROTO = 0
 # A prompt that entered the training batch is ineligible for B_BATCH for
 # the next N windows (= training steps). Forces curriculum rotation so
 # the policy has time to shift between reuses.
-BATCH_PROMPT_COOLDOWN_WINDOWS = 50
+BATCH_PROMPT_COOLDOWN_WINDOWS = 72
 
 # Bootstrap phase: first BOOTSTRAP_WINDOWS of a new subnet/checkpoint use
 # relaxed thresholds to keep the batch filling while miner pop + env
