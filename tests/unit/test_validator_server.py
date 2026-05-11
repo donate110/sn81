@@ -247,3 +247,79 @@ def test_checkpoint_endpoint_returns_manifest_when_set():
     assert body["repo_id"] == "aivolutionedge/reliquary-sn"
     assert body["revision"] == "rev_sha_042"
     assert body["signature"] == "ed25519:sig_42"
+
+
+# --- provisional response semantics ---
+
+def test_submit_returns_submitted_under_worker_path():
+    """Under uvicorn (worker path), /submit must enqueue and return the
+    ``SUBMITTED`` sentinel rather than ``ACCEPTED``. The miner needs a way
+    to tell "queued, validation pending" from "fully validated and in
+    _valid" — the latter is reserved for the inline sync path used by
+    tests.
+    """
+    from reliquary.protocol.submission import WindowState
+
+    server = ValidatorServer()
+    batcher = _batcher(window_start=500)
+    batcher.current_checkpoint_hash = "sha256:test"
+    server.set_active_batcher(batcher)
+    server.set_current_state(WindowState.OPEN)
+    # Pretend a worker is running so the prod enqueue branch is taken.
+    server._worker_task = object()
+
+    client = TestClient(server.app)
+    resp = client.post("/submit", json=_request().model_dump(mode="json"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["accepted"] is True
+    assert body["reason"] == "submitted"
+
+
+# --- worker drops items whose batcher is no longer active ---
+
+@pytest.mark.asyncio
+async def test_worker_drops_late_items_for_stale_batcher():
+    """The worker must skip queue items whose batcher is no longer the
+    server's active_batcher — those items were enqueued when the previous
+    window was OPEN and would otherwise burn GRAIL compute on a sealed
+    _valid that will never be archived.
+    """
+    import asyncio
+
+    server = ValidatorServer()
+    old_batcher = _batcher(window_start=500)
+    new_batcher = _batcher(window_start=501)
+    accept_calls: list[int] = []
+
+    def _spy_accept(req):
+        accept_calls.append(req.prompt_idx)
+        from reliquary.protocol.submission import BatchSubmissionResponse
+        return BatchSubmissionResponse(accepted=True, reason=RejectReason.ACCEPTED)
+
+    old_batcher.accept_submission = _spy_accept
+    new_batcher.accept_submission = _spy_accept
+
+    # Active is the new batcher. The queue has a leftover stale item plus
+    # one for the new batcher.
+    server.set_active_batcher(new_batcher)
+    await server._submit_queue.put((_request(prompt_idx=11), old_batcher))
+    await server._submit_queue.put((_request(prompt_idx=22), new_batcher))
+
+    # Run the worker just long enough to drain both items.
+    worker_task = asyncio.create_task(server._submit_worker())
+    # Yield until queue is empty.
+    for _ in range(50):
+        if server._submit_queue.empty():
+            break
+        await asyncio.sleep(0.01)
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
+
+    # Only the active-batcher item should have hit accept_submission.
+    assert accept_calls == [22], (
+        f"expected only prompt 22 to be processed, got {accept_calls}"
+    )

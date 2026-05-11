@@ -22,12 +22,21 @@ from reliquary.constants import CHALLENGE_K, M_ROLLOUTS, MAX_NEW_TOKENS_PROTOCOL
 class RejectReason(str, Enum):
     """Canonical reject codes emitted by the v2 validator.
 
-    ``ACCEPTED`` is a sentinel used in success responses (``accepted=True``).
-    All other values are mutually exclusive; only the first failure reason
-    is reported per submission.
+    Two values are success sentinels rather than rejects:
+      - ``ACCEPTED``: validation pipeline ran to completion and the
+        submission is in ``_valid`` (only used on the inline sync path,
+        e.g. TestClient).
+      - ``SUBMITTED``: the request was placed on the worker queue and
+        will be validated asynchronously. The miner does NOT yet know
+        whether GRAIL will pass — the real verdict surfaces in the
+        validator's logs and in the R2 archive.
+
+    All other values are mutually exclusive failure reasons; only the
+    first failure reason is reported per submission.
     """
 
     ACCEPTED = "accepted"
+    SUBMITTED = "submitted"
     BAD_SIGNATURE = "bad_signature"
     BAD_PROMPT_IDX = "bad_prompt_idx"
     PROMPT_MISMATCH = "prompt_mismatch"
