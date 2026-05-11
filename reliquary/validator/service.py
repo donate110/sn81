@@ -460,7 +460,14 @@ class ValidationService:
             "reject_summary": dict(getattr(batcher, "reject_counts", {})),
             "rejected": rejected_entries,
         }
-        await storage.upload_window_dataset(batcher.window_start, archive)
+        # Non-blocking archive: enqueue to disk and return immediately.
+        # The background ``ArchiveQueue`` worker (started in run()) picks
+        # this up and uploads via the same sync-boto3 path used in
+        # storage.upload_window_dataset, with persistent retry-on-failure.
+        # Main-loop window iteration is unblocked even if R2 is down for
+        # hours, and queued payloads survive process restarts.
+        from reliquary.infrastructure.archive_queue import get_archive_queue
+        get_archive_queue().enqueue(batcher.window_start, archive)
 
     async def run(self, subtensor) -> None:
         await self.server.start()
@@ -468,6 +475,17 @@ class ValidationService:
         await self._apply_resume_from()                  # ← resume before bootstrap
         await self._bootstrap_state_from_external()
         await self._rebuild_cooldown_from_history()
+
+        # Start the background archive-upload worker. It scans the queue
+        # directory for any pending payloads (from before this restart
+        # or accumulated during R2 downtime) and uploads them via sync
+        # boto3 with exponential backoff. Cancelled cleanly on shutdown.
+        from reliquary.infrastructure.archive_queue import get_archive_queue
+        self._archive_worker_task = asyncio.create_task(
+            get_archive_queue().run_forever(),
+            name="archive_queue_worker",
+        )
+
         logger.info(
             "Validator started (v2.1): env=%s, netuid=%d, http=%s:%d",
             self.env.name, self.netuid, self.server.host, self.server.port,
@@ -507,6 +525,17 @@ class ValidationService:
                     self._set_state(WindowState.READY)
                     await asyncio.sleep(POLL_INTERVAL_SECONDS)
         finally:
+            # Cancel the archive worker and let it drain in-flight uploads
+            # before we tear down the server. The worker survives many
+            # window cycles so we shut it down deliberately rather than
+            # waiting for process exit to GC it.
+            task = getattr(self, "_archive_worker_task", None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=5)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
             await self.server.stop()
             telemetry.finish()
 
