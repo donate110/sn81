@@ -7,7 +7,7 @@ license = "MIT"
 dependencies = [
     "torch>=2.1.0",
     "numpy>=1.20.0",
-    "transformers>=4.40.0",
+    "transformers>=4.40.0,<5.0.0",
     "safetensors>=0.3.0",
     "bittensor>=9.0.0,<10.3.0",
     "pydantic>=2.3,<3.0.0",
@@ -34,6 +34,9 @@ dev = [
 ]
 wandb = [
     "wandb>=0.16",
+]
+vllm = [
+    "vllm>=0.5.0",
 ]
 
 [project.scripts]

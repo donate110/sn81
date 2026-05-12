@@ -35,6 +35,20 @@ def mine(
             "Useful for local testing — e.g. http://127.0.0.1:8888"
         ),
     ),
+    optimized: bool = typer.Option(
+        True,
+        "--optimized/--no-optimized",
+        help="Use optimized engine with parallel proofs and prompts (default: True)",
+    ),
+    use_vllm: bool = typer.Option(
+        False,
+        "--vllm/--no-vllm",
+        help="Use vLLM library for ultra-fast generation (requires: pip install vllm)",
+    ),
+    max_parallel_prompts: int = typer.Option(
+        3,
+        help="Number of prompts to process in parallel (optimized mode only)",
+    ),
     log_level: str = typer.Option("INFO", help="Log level"),
 ):
     """Run Reliquary miner."""
@@ -45,8 +59,8 @@ def mine(
     os.environ["NETUID"] = str(netuid)
 
     logger.info(
-        "Starting Reliquary miner (network=%s, netuid=%d, env=%s)",
-        network, netuid, environment,
+        "Starting Reliquary miner (network=%s, netuid=%d, env=%s, optimized=%s, vllm=%s)",
+        network, netuid, environment, optimized, use_vllm,
     )
 
     async def _run():
@@ -123,15 +137,49 @@ def mine(
         ).to(proof_device).eval()
 
         env = load_environment(environment)
-        engine = MiningEngine(
-            vllm_model,
-            hf_model,
-            tokenizer,
-            wallet,
-            env,
-            proof_gpu=0 if proof_device == "cuda:0" else 1,
-            validator_url_override=validator_url or None,
-        )
+        
+        if use_vllm:
+            logger.info("Using VLLMMiningEngine (vLLM generation + %d parallel prompts)", max_parallel_prompts)
+            from reliquary.miner.engine_vllm import VLLMMiningEngine
+            
+            # vLLM only needs HF model for proofs
+            engine = VLLMMiningEngine(
+                hf_model=hf_model,
+                tokenizer=tokenizer,
+                wallet=wallet,
+                env=env,
+                model_path=initial_path,
+                vllm_gpu=0,
+                proof_gpu=0 if proof_device == "cuda:0" else 1,
+                validator_url_override=validator_url or None,
+                max_parallel_prompts=max_parallel_prompts,
+                vllm_tensor_parallel_size=1,
+            )
+        elif optimized:
+            logger.info("Using OptimizedMiningEngine (parallel proofs + %d parallel prompts)", max_parallel_prompts)
+            from reliquary.miner.engine_optimized import OptimizedMiningEngine
+            engine = OptimizedMiningEngine(
+                vllm_model,
+                hf_model,
+                tokenizer,
+                wallet,
+                env,
+                proof_gpu=0 if proof_device == "cuda:0" else 1,
+                validator_url_override=validator_url or None,
+                max_parallel_prompts=max_parallel_prompts,
+            )
+        else:
+            logger.info("Using standard MiningEngine")
+            from reliquary.miner.engine import MiningEngine
+            engine = MiningEngine(
+                vllm_model,
+                hf_model,
+                tokenizer,
+                wallet,
+                env,
+                proof_gpu=0 if proof_device == "cuda:0" else 1,
+                validator_url_override=validator_url or None,
+            )
 
         # Seed engine's _loaded_checkpoint_path so the first
         # maybe_pull_checkpoint sees we're already synced (skips redundant reload).
