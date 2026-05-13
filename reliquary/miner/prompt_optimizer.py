@@ -42,11 +42,10 @@ class PromptStats:
 class PromptOptimizer:
     """Optimizes prompt selection using top miner data."""
     
-    # Top 3 miners from reliqua.ai dashboard
+    # Top miners from reliqua.ai dashboard (updated May 13, 2026)
     TOP_MINERS = [
-        "5Hp6EPJd1zcXgC9T9Q2ckpYnK3cWiU3Pmj4ccXNeWPS8otkC",  # Rank 1
+        "5GP17Rz6bwuCCpwbbFGEGL2tRbT7ewRprTA27Fsmq2QVdqwP",  # Rank 1
         "5CAHZw3kUtF3fVyAfbhYkNRVhDWmM8HfjpYiR2BT4ccRBpHu",  # Rank 2
-        "5HeRQCLF7KTrz9HrUk6puoUVArNfn8n23iEUZVHnCkUSxwzf",  # Rank 3
     ]
     
     API_URL_TEMPLATE = "https://www.reliqua.ai/api/miners/{hotkey}"
